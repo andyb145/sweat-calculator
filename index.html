@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Sweat Rate">
+<meta name="theme-color" content="#020b18">
+<title>Sweat Rate Calculator</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #020b18; color: #f1f5f9; font-family: -apple-system, 'Inter', system-ui, sans-serif; min-height: 100vh; padding-bottom: env(safe-area-inset-bottom, 20px); }
+  button { font-family: inherit; }
+  input { font-family: inherit; }
+  input[type=number] { -moz-appearance: textfield; }
+  input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script>
+const { useState, useEffect, useCallback, useRef } = React;
+
+// ── Weather from Open-Meteo Historical Forecast API ──────────────────────────
+// Uses historical-forecast-api.open-meteo.com — covers past forecasts from 2022
+async function fetchWeather(startLocal, lat, lng, movingTimeSecs) {
+  const dateStr = startLocal.slice(0, 10);
+  const url = `https://historical-forecast-api.open-meteo.com/v1/forecast` +
+    `?latitude=${lat.toFixed(4)}&longitude=${lng.toFixed(4)}` +
+    `&start_date=${dateStr}&end_date=${dateStr}` +
+    `&hourly=temperature_2m,relative_humidity_2m` +
+    `&timezone=Europe%2FLondon`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data.hourly?.time) return null;
+    // time format: "2026-06-13T08:00" — match on date+hour
+    const targetHour = startLocal.slice(0, 13); // "2026-06-13T08"
+    const startIdx = data.hourly.time.findIndex(t => t.startsWith(targetHour));
+    if (startIdx === -1) return null;
+    const durHrs = Math.ceil((movingTimeSecs || 3600) / 3600);
+    const endIdx = Math.min(startIdx + durHrs, data.hourly.time.length - 1);
+    const temps = data.hourly.temperature_2m.slice(startIdx, endIdx + 1).filter(t => t != null);
+    const humid = (data.hourly.relative_humidity_2m || []).slice(startIdx, endIdx + 1).filter(h => h != null);
+    if (!temps.length) return null;
+    return {
+      tempC: Math.round(temps.reduce((a, b) => a + b, 0) / temps.length * 10) / 10,
+      humidity: humid.length ? Math.round(humid.reduce((a, b) => a + b, 0) / humid.length) : null,
+    };
+  } catch { return null; }
+}
+const SODIUM = 1126;
+const GEL_KG = 0.080;
+
+// ── Strava activities (refresh by asking Claude) ──────────────────────────────
+const STRAVA_ACTIVITIES = [
+  {id:"18899276227",name:"Morning Run",sport_type:"Run",start_local:"2026-06-13T08:02:01",summary:{distance:10008.1,moving_time:3048,avg_speed:3.283,total_calories:700,elevation_gain:56}},
+  {id:"18860557324",name:"Morning Run",sport_type:"Run",start_local:"2026-06-10T07:19:02",summary:{distance:7455.9,moving_time:2615,avg_speed:2.851,total_calories:535,elevation_gain:37}},
+  {id:"18821045809",name:"Turks Head 10k",sport_type:"Run",start_local:"2026-06-07T10:02:30",summary:{distance:9973.2,moving_time:2216,avg_speed:4.501,total_calories:734,elevation_gain:40}},
+  {id:"18821055723",name:"Morning Run",sport_type:"Run",start_local:"2026-06-07T10:50:42",summary:{distance:1006.8,moving_time:374,avg_speed:2.692,total_calories:81,elevation_gain:0}},
+  {id:"18752461298",name:"Drenched",sport_type:"Run",start_local:"2026-06-02T08:35:31",summary:{distance:9302.4,moving_time:2820,avg_speed:3.299,total_calories:646,elevation_gain:236}},
+  {id:"18724675640",name:"Lovely",sport_type:"Run",start_local:"2026-05-31T08:01:14",summary:{distance:13009.2,moving_time:3967,avg_speed:3.279,total_calories:932,elevation_gain:206}},
+  {id:"18699873807",name:"Morning Run",sport_type:"Run",start_local:"2026-05-29T09:56:25",summary:{distance:8639.3,moving_time:2509,avg_speed:3.443,total_calories:603,elevation_gain:31}},
+  {id:"18672156407",name:"Morning Run",sport_type:"Run",start_local:"2026-05-27T09:11:23",summary:{distance:8355,moving_time:2374,avg_speed:3.519,total_calories:596,elevation_gain:26}},
+];
+
+// ── Historic entries from spreadsheet ────────────────────────────────────────
+const HISTORIC_ENTRIES = [
+  {id:1008,activityName:"Running",date:"2026-05-25",durationMins:47,paceDisplay:"5:16 /km",tempC:27,humidity:null,weightBefore:77.1,weightAfter:75.3,fuelWeight:0,fluidConsumedL:0,sweatLossL:1.8,sweatRateL:2.298,bwChangePct:-2.33,sodiumLossHr:2588,totalSodiumLoss:2027,rehydrationRec:2.25,historic:true},
+  {id:1007,activityName:"Running",date:"2026-05-23",durationMins:98,paceDisplay:"4:37 /km",tempC:24,humidity:null,weightBefore:76.6,weightAfter:76.0,fuelWeight:2.009,fluidConsumedL:2.009,sweatLossL:2.609,sweatRateL:1.597,bwChangePct:-0.78,sodiumLossHr:1798,totalSodiumLoss:2938,rehydrationRec:3.26,historic:true},
+  {id:1005,activityName:"Running",date:"2026-04-26",durationMins:86,paceDisplay:"4:32 /km",tempC:15,humidity:null,weightBefore:76.6,weightAfter:75.6,fuelWeight:0.8,fluidConsumedL:0.8,sweatLossL:1.8,sweatRateL:1.256,bwChangePct:-1.31,sodiumLossHr:1414,totalSodiumLoss:2027,rehydrationRec:2.25,historic:true},
+  {id:1004,activityName:"Running",date:"2026-04-19",durationMins:89,paceDisplay:"4:55 /km",tempC:15,humidity:null,weightBefore:79.7,weightAfter:78.5,fuelWeight:1.051,fluidConsumedL:1.051,sweatLossL:2.251,sweatRateL:1.518,bwChangePct:-1.51,sodiumLossHr:1709,totalSodiumLoss:2535,rehydrationRec:2.81,historic:true},
+  {id:1003,activityName:"Running",date:"2026-04-12",durationMins:130,paceDisplay:"4:49 /km",tempC:15,humidity:null,weightBefore:77.0,weightAfter:75.7,fuelWeight:1.375,fluidConsumedL:1.375,sweatLossL:2.675,sweatRateL:1.235,bwChangePct:-1.69,sodiumLossHr:1391,totalSodiumLoss:3012,rehydrationRec:3.34,historic:true},
+  {id:1006,activityName:"Running",date:"2026-04-03",durationMins:99,paceDisplay:"4:57 /km",tempC:15,humidity:null,weightBefore:77.2,weightAfter:76.5,fuelWeight:1.154,fluidConsumedL:1.154,sweatLossL:1.854,sweatRateL:1.124,bwChangePct:-0.91,sodiumLossHr:1266,totalSodiumLoss:2088,rehydrationRec:2.32,historic:true},
+  {id:1002,activityName:"Running",date:"2026-03-30",durationMins:112,paceDisplay:"4:53 /km",tempC:8,humidity:null,weightBefore:76.9,weightAfter:75.8,fuelWeight:0.79,fluidConsumedL:0.79,sweatLossL:1.89,sweatRateL:1.012,bwChangePct:-1.43,sodiumLossHr:1140,totalSodiumLoss:2128,rehydrationRec:2.36,historic:true},
+  {id:1001,activityName:"Running",date:"2026-03-24",durationMins:67,paceDisplay:"5:00 /km",tempC:11,humidity:null,weightBefore:75.4,weightAfter:74.5,fuelWeight:0,fluidConsumedL:0,sweatLossL:0.9,sweatRateL:0.806,bwChangePct:-1.19,sodiumLossHr:908,totalSodiumLoss:1013,rehydrationRec:1.12,historic:true},
+  {id:1000,activityName:"Running",date:"2026-03-22",durationMins:105,paceDisplay:"4:58 /km",tempC:11,humidity:null,weightBefore:74.8,weightAfter:73.7,fuelWeight:0.77,fluidConsumedL:0.77,sweatLossL:1.87,sweatRateL:1.069,bwChangePct:-1.47,sodiumLossHr:1204,totalSodiumLoss:2106,rehydrationRec:2.34,historic:true},
+];
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+function fmtPace(ms) {
+  if (!ms) return null;
+  const mpk = 1000/60/ms;
+  return `${Math.floor(mpk)}:${Math.round((mpk%1)*60).toString().padStart(2,'0')} /km`;
+}
+function fmtDist(m) { return m ? `${(m/1000).toFixed(1)} km` : null; }
+function fmtDur(s) {
+  if (!s) return null;
+  const h = Math.floor(s/3600), m = Math.floor((s%3600)/60);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+function fmtDate(iso) {
+  if (!iso) return '';
+  return new Date(iso+'T12:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
+}
+function band(pct) {
+  const a = Math.abs(pct);
+  if (a<=2) return {label:'Well-hydrated',color:'#22c55e',bg:'#14532d'};
+  if (a<=4) return {label:'Mild dehydration',color:'#facc15',bg:'#713f12'};
+  if (a<=8) return {label:'Moderate dehydration',color:'#f97316',bg:'#7c2d12'};
+  return {label:'Severe dehydration',color:'#ef4444',bg:'#7f1d1d'};
+}
+function rateColor(r) { return r<1?'#22c55e':r<2?'#06b6d4':r<2.5?'#facc15':'#f97316'; }
+
+// ── storage (localStorage for standalone) ────────────────────────────────────
+const LS_KEY = 'sweatrate:entries:v1';
+function loadEntries() {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return null;
+}
+function saveEntries(entries) {
+  try { localStorage.setItem(LS_KEY, JSON.stringify(entries)); } catch {}
+}
+
+// ── Gauge ─────────────────────────────────────────────────────────────────────
+function Gauge({rate}) {
+  const max=3.5, pct=Math.min((rate/max)*100,100), c=rateColor(rate);
+  return React.createElement('div',{style:{margin:'0 0 4px'}},
+    React.createElement('div',{style:{display:'flex',justifyContent:'space-between',fontSize:11,color:'#64748b',marginBottom:4}},
+      ['0','1','2','3+'].map(l=>React.createElement('span',{key:l},l))),
+    React.createElement('div',{style:{height:10,background:'#1e293b',borderRadius:5,overflow:'hidden',position:'relative'}},
+      [1,2,3].map(t=>React.createElement('div',{key:t,style:{position:'absolute',left:`${(t/max)*100}%`,top:0,bottom:0,width:1,background:'#334155'}})),
+      React.createElement('div',{style:{width:`${pct}%`,height:'100%',background:c,borderRadius:5,transition:'width .5s ease'}})));
+}
+
+// ── Main app ──────────────────────────────────────────────────────────────────
+function App() {
+  const [view, setView] = useState('log');
+  const [sel, setSel] = useState(null);
+  const [wb, setWb] = useState('');
+  const [wa, setWa] = useState('');
+  const [gels, setGels] = useState(0);
+  const [waterMl, setWaterMl] = useState(0);
+  const [temp, setTemp] = useState('');
+  const [humidity, setHumidity] = useState('');
+  const fuelKg = gels * GEL_KG + waterMl / 1000;
+
+  // Entries — seed with historic on first load
+  const [entries, setEntries] = useState(() => {
+    const saved = loadEntries();
+    if (saved !== null) return saved;
+    return HISTORIC_ENTRIES;
+  });
+
+  // Persist whenever entries change
+  useEffect(() => { saveEntries(entries); }, [entries]);
+
+  const [weatherStatus, setWeatherStatus] = useState(null); // null | 'fetching' | 'ok' | 'unavailable'
+
+  // Reset form + fetch weather when activity changes
+  useEffect(() => {
+    if (!sel) return;
+    setWb(''); setWa(''); setGels(0); setWaterMl(0); setTemp(''); setHumidity('');
+    setWeatherStatus('fetching');
+    // Use Hampton coords as default (all runs start there)
+    const lat = 51.4192, lng = -0.3631;
+    fetchWeather(sel.start_local, lat, lng, sel.summary?.moving_time)
+      .then(w => {
+        if (w) {
+          setTemp(String(w.tempC));
+          if (w.humidity != null) setHumidity(String(w.humidity));
+          setWeatherStatus('ok');
+        } else {
+          setWeatherStatus('unavailable');
+        }
+      })
+      .catch(() => setWeatherStatus('unavailable'));
+  }, [sel?.id]);
+
+  const canCalc = sel && wb !== '' && wa !== '';
+
+  const save = useCallback(() => {
+    if (!canCalc) return;
+    const dh = (sel.summary?.moving_time||0)/3600;
+    const fluid = fuelKg;
+    const sweatL = +(+wb - +wa + fluid).toFixed(3);
+    const rate = dh>0 ? +(sweatL/dh).toFixed(3) : 0;
+    const bwpct = +((( +wa - +wb) / +wb)*100).toFixed(2);
+    const entry = {
+      id: Date.now(),
+      activityName: sel.name,
+      activityId: sel.id,
+      date: sel.start_local,
+      durationMins: (sel.summary?.moving_time||0)/60,
+      distanceKm: (sel.summary?.distance||0)/1000,
+      paceDisplay: fmtPace(sel.summary?.avg_speed),
+      calories: sel.summary?.total_calories,
+      tempC: temp !== '' ? +temp : null,
+      humidity: humidity !== '' ? +humidity : null,
+      weightBefore: +wb, weightAfter: +wa, fuelWeight: fluid, fluidConsumedL: fluid,
+      sweatLossL: sweatL, sweatRateL: rate, bwChangePct: bwpct,
+      sodiumLossHr: Math.round(rate*SODIUM),
+      totalSodiumLoss: Math.round(sweatL*SODIUM),
+      rehydrationRec: +(sweatL*1.25).toFixed(2),
+    };
+    setEntries(prev => [entry, ...prev]);
+    setView('history');
+    setSel(null); setWb(''); setWa(''); setGels(0); setWaterMl(0); setTemp(''); setHumidity('');
+  }, [canCalc, sel, wb, wa, fuelKg, temp, humidity]);
+
+  const deleteEntry = id => setEntries(prev => prev.filter(e => e.id !== id));
+  const clearAll = () => { if (confirm('Clear all entries?')) setEntries([]); };
+
+  const allRates = entries.map(e=>e.sweatRateL);
+  const avgRate = allRates.length ? (allRates.reduce((a,b)=>a+b,0)/allRates.length).toFixed(2) : null;
+  const minRate = allRates.length ? Math.min(...allRates).toFixed(2) : null;
+  const maxRate = allRates.length ? Math.max(...allRates).toFixed(2) : null;
+
+  // ── Planner state ──
+  const [startWt, setStartWt] = useState(73);
+  const [raceDur, setRaceDur] = useState(3);
+  const [planRows, setPlanRows] = useState(()=>Array.from({length:24},(_,i)=>({hour:i+1,sweat:'',fluid:''})));
+  const updatePlan = (i,f,v) => setPlanRows(prev=>prev.map((r,idx)=>idx===i?{...r,[f]:v}:r));
+  const fillSweat = v => setPlanRows(prev=>prev.map(r=>({...r,sweat:v})));
+  const planCalc = planRows.slice(0,raceDur).reduce((acc,row,i)=>{
+    const pw = i===0 ? startWt : acc[i-1].wt;
+    const wt = pw - (parseFloat(row.sweat)||0) + (parseFloat(row.fluid)||0);
+    const pct = ((wt-startWt)/startWt)*100;
+    acc.push({...row,wt:+wt.toFixed(2),pct:+pct.toFixed(2)});
+    return acc;
+  },[]);
+
+  // ── styles ──
+  const s = {
+    card: {background:'#0f172a',borderRadius:10,border:'1px solid #1e293b'},
+    label: {fontSize:11,color:'#64748b',textTransform:'uppercase',letterSpacing:1},
+    input: {background:'#0f172a',border:'1px solid #334155',borderRadius:6,color:'#f1f5f9',padding:'8px 10px',fontSize:16,width:80,outline:'none'},
+    tab: (active) => ({padding:'7px 16px',borderRadius:20,border:'none',background:active?'#0e7490':'#1e293b',color:active?'#fff':'#94a3b8',fontSize:13,fontWeight:600,cursor:'pointer'}),
+  };
+
+  const h = React.createElement;
+
+  // ── Activity card ──
+  function ActivityCard({a}) {
+    const active = sel?.id === a.id;
+    return h('div',{onClick:()=>setSel(a),style:{padding:'10px 14px',borderRadius:8,border:`1px solid ${active?'#0e7490':'#1e293b'}`,background:active?'#0c2c35':'#0f172a',cursor:'pointer',transition:'all .15s'}},
+      h('div',{style:{display:'flex',justifyContent:'space-between'}},
+        h('div',{style:{fontWeight:600,color:'#f1f5f9',fontSize:14}},a.name),
+        h('div',{style:{fontSize:11,color:'#64748b'}},fmtDate(a.start_local))),
+      h('div',{style:{marginTop:4,display:'flex',gap:12,fontSize:12,color:'#94a3b8',flexWrap:'wrap'}},
+        fmtDist(a.summary?.distance) && h('span',null,fmtDist(a.summary.distance)),
+        fmtDur(a.summary?.moving_time) && h('span',null,fmtDur(a.summary.moving_time)),
+        fmtPace(a.summary?.avg_speed) && h('span',null,fmtPace(a.summary.avg_speed)),
+        a.summary?.total_calories && h('span',null,`${a.summary.total_calories} kcal`)));
+  }
+
+  // ── Entry card ──
+  function EntryCard({e}) {
+    const b = band(e.bwChangePct);
+    const dur = e.durationMins ? fmtDur(e.durationMins*60) : null;
+    const dist = e.distanceKm ? fmtDist(e.distanceKm*1000) : null;
+    return h('div',{style:{...s.card,overflow:'hidden'}},
+      h('div',{style:{padding:'12px 14px',borderBottom:'1px solid #1e293b',display:'flex',justifyContent:'space-between',alignItems:'flex-start'}},
+        h('div',null,
+          h('div',{style:{fontWeight:700,fontSize:14,color:'#f1f5f9',display:'flex',alignItems:'center',gap:6}},
+            e.activityName,
+            e.historic && h('span',{style:{fontSize:10,color:'#475569',fontWeight:400,background:'#1e293b',padding:'1px 6px',borderRadius:4}},'imported')),
+          h('div',{style:{fontSize:11,color:'#64748b',marginTop:2}},
+            [fmtDate(e.date),dist,dur,e.paceDisplay,e.tempC!=null?`${e.tempC}°C`:null,e.humidity!=null?`${e.humidity}% RH`:null]
+              .filter(Boolean).join(' · '))),
+        h('div',{style:{display:'flex',alignItems:'center',gap:6}},
+          h('div',{style:{padding:'4px 10px',borderRadius:20,background:b.bg,color:b.color,fontSize:11,fontWeight:700,border:`1px solid ${b.color}`,whiteSpace:'nowrap'}},`${e.bwChangePct.toFixed(1)}%`),
+          h('button',{onClick:()=>deleteEntry(e.id),style:{background:'none',border:'none',color:'#475569',fontSize:16,cursor:'pointer',padding:'2px 4px',lineHeight:1}},'✕'))),
+      h('div',{style:{padding:'10px 14px 0'}},h(Gauge,{rate:e.sweatRateL})),
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8,padding:'8px 14px 14px'}},
+        [{l:'Sweat rate',v:`${e.sweatRateL.toFixed(2)} L/hr`,accent:true},{l:'Total loss',v:`${e.sweatLossL.toFixed(2)} L`},
+         {l:'Na⁺ loss',v:`${e.totalSodiumLoss.toLocaleString()} mg`},{l:'Fluid in',v:`${e.fluidConsumedL.toFixed(2)} L`},
+         {l:'Na⁺/hr',v:`${e.sodiumLossHr.toLocaleString()} mg`},{l:'Rehydrate',v:`${e.rehydrationRec.toFixed(2)} L`}]
+          .map(({l,v,accent})=>h('div',{key:l},
+            h('div',{style:{fontSize:10,color:'#64748b',marginBottom:2}},l),
+            h('div',{style:{fontSize:14,fontWeight:700,color:accent?'#22d3ee':'#f1f5f9'}},v)))));
+  }
+
+  // ── LOG VIEW ──
+  function LogView() {
+    const dh = (sel?.summary?.moving_time||0)/3600;
+    const fluid = fuelKg;
+    const preview = canCalc ? {
+      sweatL: +wb - +wa + fluid,
+      rate: dh>0 ? (+wb - +wa + fluid)/dh : 0,
+      bwpct: ((+wa - +wb) / +wb)*100,
+    } : null;
+    const b = preview ? band(preview.bwpct) : null;
+
+    return h('div',{style:{display:'flex',flexDirection:'column',gap:20}},
+      // Activity list
+      h('section',null,
+        h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:12}},
+          h('h2',{style:{fontSize:13,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:1}},'1 · Select activity'),
+          h('div',{style:{display:'flex',alignItems:'center',gap:8}},
+            h('span',{style:{fontSize:11,color:'#475569'}},'Last refreshed 13 Jun'),
+            h('button',{
+              title:'Ask Claude to refresh',
+              style:{background:'#1e293b',border:'1px solid #334155',borderRadius:6,color:'#94a3b8',fontSize:11,padding:'3px 8px',cursor:'pointer'}
+            },'↻ Refresh'))),
+        h('div',{style:{display:'flex',flexDirection:'column',gap:8}},
+          STRAVA_ACTIVITIES.map(a=>h(ActivityCard,{key:a.id,a})))),
+
+      // Weights + fuel
+      sel && h('section',null,
+        h('h2',{style:{fontSize:13,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:1,marginBottom:12}},'2 · Weigh in / out'),
+        h('div',{style:{...s.card,padding:16,display:'flex',flexDirection:'column',gap:16}},
+          // Weight inputs
+          h('div',{style:{display:'flex',gap:16,flexWrap:'wrap'}},
+            ['before','after'].map(which=>
+              h('label',{key:which,style:{display:'flex',flexDirection:'column',gap:6}},
+                h('span',{style:s.label},`Weight ${which}`),
+                h('div',{style:{display:'flex',alignItems:'center',gap:8}},
+                  h('input',{type:'number',step:0.05,value:which==='before'?wb:wa,placeholder:'—',
+                    onChange:e=>which==='before'?setWb(e.target.value):setWa(e.target.value),style:s.input}),
+                  h('span',{style:{color:'#64748b',fontSize:13}},'kg'))))),
+          // Fuel
+          h('div',{style:{display:'flex',flexDirection:'column',gap:8}},
+            h('div',{style:s.label},'Fuel consumed'),
+            h('div',{style:{display:'flex',gap:16,flexWrap:'wrap',alignItems:'flex-end'}},
+              // Gels
+              h('label',{style:{display:'flex',flexDirection:'column',gap:6}},
+                h('span',{style:{fontSize:11,color:'#64748b'}},'SIS Beta gels'),
+                h('div',{style:{display:'flex',alignItems:'center',gap:8}},
+                  h('button',{onClick:()=>setGels(g=>Math.max(0,g-1)),style:{width:32,height:34,background:'#1e293b',border:'1px solid #334155',borderRadius:6,color:'#f1f5f9',fontSize:18,cursor:'pointer'}},'-'),
+                  h('span',{style:{fontSize:20,fontWeight:700,color:'#f1f5f9',minWidth:24,textAlign:'center'}},gels),
+                  h('button',{onClick:()=>setGels(g=>g+1),style:{width:32,height:34,background:'#1e293b',border:'1px solid #334155',borderRadius:6,color:'#f1f5f9',fontSize:18,cursor:'pointer'}},'+')),
+                h('span',{style:{fontSize:10,color:'#475569'}},`80g each · ${gels*80}g`)),
+              // Water
+              h('label',{style:{display:'flex',flexDirection:'column',gap:6}},
+                h('span',{style:{fontSize:11,color:'#64748b'}},'Water / drink'),
+                h('div',{style:{display:'flex',alignItems:'center',gap:8}},
+                  h('input',{type:'number',step:50,value:waterMl||'',placeholder:'0',
+                    onChange:e=>setWaterMl(parseFloat(e.target.value)||0),style:s.input}),
+                  h('span',{style:{color:'#64748b',fontSize:13}},'ml'))),
+              // Total
+              h('div',{style:{paddingBottom:4}},
+                h('div',{style:{fontSize:10,color:'#64748b',marginBottom:4}},'Total fuel'),
+                h('div',{style:{fontSize:16,fontWeight:700,color:'#22d3ee'}},`${(fuelKg*1000).toFixed(0)}g`)))),
+          // Temp + humidity — auto-filled from Open-Meteo, manually overrideable
+          h('div',{style:{display:'flex',flexDirection:'column',gap:8}},
+            h('div',{style:{display:'flex',alignItems:'baseline',gap:8}},
+              h('span',{style:s.label},'Conditions'),
+              weatherStatus==='fetching' && h('span',{style:{fontSize:11,color:'#475569'}},'fetching weather…'),
+              weatherStatus==='ok' && h('span',{style:{fontSize:11,color:'#22d3ee'}},'☁ Open-Meteo · edit to override'),
+              weatherStatus==='unavailable' && h('span',{style:{fontSize:11,color:'#475569'}},'not available — enter manually')),
+            h('div',{style:{display:'flex',gap:16,flexWrap:'wrap'}},
+              [{label:'Temperature',val:temp,set:v=>{setTemp(v);setWeatherStatus('ok');},unit:'°C',step:0.5},
+               {label:'Humidity',val:humidity,set:v=>{setHumidity(v);setWeatherStatus('ok');},unit:'%',step:1}]
+                .map(({label,val,set,unit,step})=>
+                  h('label',{key:label,style:{display:'flex',flexDirection:'column',gap:6}},
+                    h('span',{style:{fontSize:11,color:'#64748b'}},label),
+                    h('div',{style:{display:'flex',alignItems:'center',gap:8}},
+                      h('input',{type:'number',step,value:val,placeholder:'—',
+                        onChange:e=>set(e.target.value),
+                        style:{...s.input,border:weatherStatus==='ok'&&val!==''?'1px solid #0e7490':'1px solid #334155'}}),
+                      h('span',{style:{color:'#64748b',fontSize:13}},unit)))))))),
+
+      // Preview
+      preview && h('section',null,
+        h('h2',{style:{fontSize:13,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:1,marginBottom:12}},'3 · Results preview'),
+        h('div',{style:{...s.card,padding:16}},
+          h('div',{style:{marginBottom:14}},h(Gauge,{rate:preview.rate})),
+          h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}},
+            [{l:'Sweat rate',v:`${preview.rate.toFixed(2)} L/hr`,accent:true},
+             {l:'Total sweat loss',v:`${preview.sweatL.toFixed(2)} L`},
+             {l:'Body weight Δ',v:`${preview.bwpct.toFixed(1)}%`},
+             {l:'Na⁺ loss/hr',v:`${Math.round(preview.rate*SODIUM).toLocaleString()} mg/hr`},
+             {l:'Total Na⁺ lost',v:`${Math.round(preview.sweatL*SODIUM).toLocaleString()} mg`},
+             {l:'Rehydration target',v:`${(preview.sweatL*1.25).toFixed(2)} L`}]
+              .map(({l,v,accent})=>h('div',{key:l,style:{...s.card,padding:'12px 14px',border:`1px solid ${accent?'#0e7490':'#1e293b'}`}},
+                h('div',{style:{fontSize:10,color:'#64748b',textTransform:'uppercase',letterSpacing:1,marginBottom:4}},l),
+                h('div',{style:{fontSize:accent?22:18,fontWeight:700,color:accent?'#22d3ee':'#f1f5f9',fontVariantNumeric:'tabular-nums'}},v)))),
+          h('div',{style:{padding:'10px 14px',borderRadius:8,background:b.bg,border:`1px solid ${b.color}`,fontSize:13,color:b.color,fontWeight:600}},
+            `${b.label} · ${Math.abs(preview.bwpct).toFixed(1)}% body mass lost`)),
+        h('button',{onClick:save,style:{marginTop:14,width:'100%',padding:14,background:'#0e7490',border:'none',borderRadius:10,color:'#fff',fontSize:15,fontWeight:700,cursor:'pointer'}},
+          'Save to history →')));
+  }
+
+  // ── HISTORY VIEW ──
+  function HistoryView() {
+    return h('div',null,
+      entries.length >= 2 && h('div',{style:{marginBottom:20}},
+        h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:12}},
+          h('h2',{style:{fontSize:13,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:1}},`Aggregates (${entries.length} sessions)`),
+          h('button',{onClick:clearAll,style:{background:'none',border:'1px solid #334155',borderRadius:6,color:'#64748b',fontSize:11,padding:'3px 10px',cursor:'pointer'}},'Clear all')),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10}},
+          [{l:'Avg rate',v:`${avgRate} L/hr`,accent:true},{l:'Min rate',v:`${minRate} L/hr`},{l:'Max rate',v:`${maxRate} L/hr`}]
+            .map(({l,v,accent})=>h('div',{key:l,style:{...s.card,padding:'12px 14px',border:`1px solid ${accent?'#0e7490':'#1e293b'}`}},
+              h('div',{style:{fontSize:10,color:'#64748b',textTransform:'uppercase',letterSpacing:1,marginBottom:4}},l),
+              h('div',{style:{fontSize:accent?22:18,fontWeight:700,color:accent?'#22d3ee':'#f1f5f9'}},[v]))))),
+      entries.length === 0 && h('div',{style:{textAlign:'center',padding:'48px 20px',color:'#475569',fontSize:14}},
+        'No sessions yet. ',h('span',{onClick:()=>setView('log'),style:{color:'#22d3ee',cursor:'pointer',textDecoration:'underline'}},'Log your first →')),
+      h('div',{style:{display:'flex',flexDirection:'column',gap:12}},
+        entries.map(e=>h(EntryCard,{key:e.id,e}))));
+  }
+
+  // ── PLANNER VIEW ──
+  function PlannerView() {
+    const last = planCalc.length ? planCalc[planCalc.length-1] : null;
+    const lb = last ? band(last.pct) : null;
+    return h('div',{style:{display:'flex',flexDirection:'column',gap:20}},
+      h('section',null,
+        h('h2',{style:{fontSize:13,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:1,marginBottom:12}},'Race parameters'),
+        h('div',{style:{...s.card,padding:16,display:'flex',flexDirection:'column',gap:16}},
+          h('div',{style:{display:'flex',gap:16,flexWrap:'wrap'}},
+            [{label:'Starting weight',val:startWt,set:setStartWt,unit:'kg',step:0.5},
+             {label:'Race duration',val:raceDur,set:v=>setRaceDur(Math.min(24,Math.max(1,parseInt(v)||1))),unit:'hours',step:1}]
+              .map(({label,val,set,unit,step})=>
+                h('label',{key:label,style:{display:'flex',flexDirection:'column',gap:6}},
+                  h('span',{style:s.label},label),
+                  h('div',{style:{display:'flex',alignItems:'center',gap:8}},
+                    h('input',{type:'number',step,value:val,onChange:e=>set(e.target.value),style:s.input}),
+                    h('span',{style:{color:'#64748b',fontSize:13}},unit))))),
+          avgRate && h('div',{style:{fontSize:12,color:'#64748b'}},
+            'Logged avg sweat rate: ',
+            h('span',{style:{color:'#22d3ee',fontWeight:700}},`${avgRate} L/hr`),
+            h('button',{onClick:()=>fillSweat(avgRate),style:{marginLeft:10,padding:'3px 10px',background:'#0e7490',border:'none',borderRadius:4,color:'#fff',fontSize:11,cursor:'pointer'}},'Fill all hours')))),
+      h('section',null,
+        h('h2',{style:{fontSize:13,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:1,marginBottom:12}},'Hour-by-hour plan'),
+        h('div',{style:{...s.card,overflow:'hidden'}},
+          h('div',{style:{display:'grid',gridTemplateColumns:'36px 1fr 1fr 80px 56px',gap:0,padding:'8px 14px',borderBottom:'1px solid #1e293b',fontSize:10,color:'#64748b',textTransform:'uppercase',letterSpacing:1}},
+            ['Hr','Sweat (L/hr)','Fluid (L/hr)','Weight','BW%'].map(t=>h('span',{key:t},t))),
+          planRows.slice(0,raceDur).map((row,i)=>{
+            const c = planCalc[i];
+            const bc = c ? band(c.pct).color : '#475569';
+            return h('div',{key:i,style:{display:'grid',gridTemplateColumns:'36px 1fr 1fr 80px 56px',gap:0,padding:'6px 14px',borderBottom:i<raceDur-1?'1px solid #1e293b':'none',alignItems:'center',background:i%2===0?'transparent':'#0a1628'}},
+              h('span',{style:{fontSize:12,color:'#64748b',fontWeight:700}},i+1),
+              h('input',{type:'number',step:0.1,value:row.sweat,placeholder:'—',onChange:e=>updatePlan(i,'sweat',e.target.value),style:{background:'transparent',border:'none',borderBottom:'1px solid #1e293b',color:'#f1f5f9',fontSize:14,width:60,outline:'none',padding:'2px 4px'}}),
+              h('input',{type:'number',step:0.1,value:row.fluid,placeholder:'—',onChange:e=>updatePlan(i,'fluid',e.target.value),style:{background:'transparent',border:'none',borderBottom:'1px solid #1e293b',color:'#f1f5f9',fontSize:14,width:60,outline:'none',padding:'2px 4px'}}),
+              h('span',{style:{fontSize:13,color:'#f1f5f9',fontVariantNumeric:'tabular-nums'}},c?`${c.wt.toFixed(1)} kg`:'—'),
+              h('span',{style:{fontSize:12,fontWeight:700,color:bc,fontVariantNumeric:'tabular-nums'}},c?`${c.pct.toFixed(1)}%`:'—'));
+          }))),
+      last && h('div',{style:{padding:'12px 14px',borderRadius:8,background:lb.bg,border:`1px solid ${lb.color}`}},
+        h('div',{style:{fontSize:13,color:lb.color,fontWeight:700,marginBottom:4}},`End of race: ${lb.label}`),
+        h('div',{style:{fontSize:12,color:'#94a3b8'}},`Projected weight ${last.wt.toFixed(1)} kg · ${Math.abs(last.pct).toFixed(1)}% body mass ${last.pct<0?'lost':'gained'}`)),
+      h('div',{style:{display:'flex',flexDirection:'column',gap:6}},
+        [{color:'#22c55e',label:'0–2% loss — Well-hydrated'},
+         {color:'#facc15',label:'2–4% loss — Mild dehydration, may impact performance in heat'},
+         {color:'#f97316',label:'4–8% loss — Moderate dehydration, significant impact'},
+         {color:'#ef4444',label:'>8% loss — Severe dehydration, health risk'}]
+          .map(({color,label})=>h('div',{key:color,style:{display:'flex',alignItems:'center',gap:8,fontSize:11,color:'#94a3b8'}},
+            h('div',{style:{width:10,height:10,borderRadius:2,background:color,flexShrink:0}}),label))));
+  }
+
+  const tabs = [{id:'log',label:'Log'},{id:'history',label:`History (${entries.length})`},{id:'planner',label:'Planner'}];
+
+  return h('div',{style:{minHeight:'100vh',background:'#020b18',color:'#f1f5f9',paddingBottom:'max(60px, env(safe-area-inset-bottom))'}},
+    // Header
+    h('div',{style:{background:'linear-gradient(135deg,#0c4a6e 0%,#020b18 60%)',padding:'max(20px, env(safe-area-inset-top)) 20px 20px',borderBottom:'1px solid #0e7490'}},
+      h('div',{style:{maxWidth:640,margin:'0 auto'}},
+        h('div',{style:{display:'flex',alignItems:'center',gap:10,marginBottom:4}},
+          h('span',{style:{fontSize:22}},'💧'),
+          h('h1',{style:{fontSize:20,fontWeight:800,letterSpacing:-0.5}},'Sweat Rate Calculator')),
+        h('p',{style:{fontSize:12,color:'#64748b'}},`${SODIUM.toLocaleString()} mg/L Na⁺ · PFH sweat test`))),
+    // Nav
+    h('div',{style:{maxWidth:640,margin:'0 auto',padding:'16px 20px 0'}},
+      h('div',{style:{display:'flex',gap:8,marginBottom:20,flexWrap:'wrap'}},
+        tabs.map(t=>h('button',{key:t.id,onClick:()=>setView(t.id),style:s.tab(view===t.id)},t.label))),
+      view==='log' && h(LogView,null),
+      view==='history' && h(HistoryView,null),
+      view==='planner' && h(PlannerView,null)));
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
+</script>
+</body>
+</html>
