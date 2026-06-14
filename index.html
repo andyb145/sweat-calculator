@@ -70,14 +70,14 @@ async function fetchWeather(startLocal, lat, lng, movingTimeSecs) {
 
 // ── Strava activities ─────────────────────────────────────────────────────────
 const STRAVA_ACTIVITIES = [
+  {id:"18913992411",name:"Morning Run (with Dorothy)",sport_type:"Run",start_local:"2026-06-14T09:00:49",summary:{distance:16309.9,moving_time:5180,avg_speed:3.149,total_calories:1108,elevation_gain:122}},
   {id:"18899276227",name:"Morning Run",sport_type:"Run",start_local:"2026-06-13T08:02:01",summary:{distance:10008.1,moving_time:3048,avg_speed:3.283,total_calories:700,elevation_gain:56}},
   {id:"18860557324",name:"Morning Run",sport_type:"Run",start_local:"2026-06-10T07:19:02",summary:{distance:7455.9,moving_time:2615,avg_speed:2.851,total_calories:535,elevation_gain:37}},
-  {id:"18821045809",name:"Turks Head 10k",sport_type:"Run",start_local:"2026-06-07T10:02:30",summary:{distance:9973.2,moving_time:2216,avg_speed:4.501,total_calories:734,elevation_gain:40}},
   {id:"18821055723",name:"Morning Run",sport_type:"Run",start_local:"2026-06-07T10:50:42",summary:{distance:1006.8,moving_time:374,avg_speed:2.692,total_calories:81,elevation_gain:0}},
-  {id:"18752461298",name:"Drenched",sport_type:"Run",start_local:"2026-06-02T08:35:31",summary:{distance:9302.4,moving_time:2820,avg_speed:3.299,total_calories:646,elevation_gain:236}},
-  {id:"18724675640",name:"Lovely",sport_type:"Run",start_local:"2026-05-31T08:01:14",summary:{distance:13009.2,moving_time:3967,avg_speed:3.279,total_calories:932,elevation_gain:206}},
-  {id:"18699873807",name:"Morning Run",sport_type:"Run",start_local:"2026-05-29T09:56:25",summary:{distance:8639.3,moving_time:2509,avg_speed:3.443,total_calories:603,elevation_gain:31}},
-  {id:"18672156407",name:"Morning Run",sport_type:"Run",start_local:"2026-05-27T09:11:23",summary:{distance:8355,moving_time:2374,avg_speed:3.519,total_calories:596,elevation_gain:26}},
+  {id:"18821045809",name:"Turks Head 10k",sport_type:"Run",start_local:"2026-06-07T10:02:30",summary:{distance:9973.2,moving_time:2216,avg_speed:4.501,total_calories:734,elevation_gain:40}},
+  {id:"18821045421",name:"Morning Run",sport_type:"Run",start_local:"2026-06-07T09:44:09",summary:{distance:2430.7,moving_time:741,avg_speed:3.280,total_calories:181,elevation_gain:7}},
+  {id:"18780035354",name:"Morning Run",sport_type:"Run",start_local:"2026-06-04T08:17:42",summary:{distance:2914.3,moving_time:876,avg_speed:3.327,total_calories:213,elevation_gain:60}},
+  {id:"18779754062",name:"Morning Run",sport_type:"Run",start_local:"2026-06-04T07:12:18",summary:{distance:7257.8,moving_time:2230,avg_speed:3.255,total_calories:502,elevation_gain:36}},
 ];
 
 // ── Historic entries ──────────────────────────────────────────────────────────
@@ -166,6 +166,7 @@ function App() {
   const [temp, setTemp] = useState('');
   const [humidity, setHumidity] = useState('');
   const [weatherStatus, setWeatherStatus] = useState(null);
+  const [showRefreshInfo, setShowRefreshInfo] = useState(false);
 
   const fuelKg = gels * GEL_KG + (parseFloat(waterMl)||0) / 1000;
   const carbsG = gels * GEL_CARBS_G;
@@ -344,9 +345,18 @@ function App() {
         h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:12}},
           h('h2',{style:{fontSize:13,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:1}},'1 · Select activity'),
           h('div',{style:{display:'flex',alignItems:'center',gap:8}},
-            h('span',{style:{fontSize:11,color:'#475569'}},'Last refreshed 13 Jun'),
-            h('button',{style:{background:'#1e293b',border:'1px solid #334155',borderRadius:6,
+            h('span',{style:{fontSize:11,color:'#475569'}},'Last refreshed 14 Jun'),
+            h('button',{
+              onClick:()=>setShowRefreshInfo(v=>!v),
+              style:{background:'#1e293b',border:'1px solid #334155',borderRadius:6,
               color:'#94a3b8',fontSize:11,padding:'3px 8px',cursor:'pointer'}},'↻ Refresh'))),
+        showRefreshInfo && h('div',{style:{marginBottom:12,padding:'10px 12px',borderRadius:8,
+          background:'#0c2c35',border:'1px solid #0e7490',fontSize:12,color:'#94a3b8',lineHeight:1.5}},
+          h('strong',{style:{color:'#22d3ee'}},'This list is static. '),
+          'To pull in new runs, open the chat with Claude and say "refresh activity list" — ',
+          'Claude fetches your latest Strava runs, updates this file and redeploys (~30 sec).',
+          h('div',{onClick:()=>setShowRefreshInfo(false),
+            style:{marginTop:8,color:'#475569',cursor:'pointer',fontSize:11,textDecoration:'underline'}},'Got it')),
         h('div',{style:{display:'flex',flexDirection:'column',gap:8}},
           STRAVA_ACTIVITIES.map(a=>h(ActivityCard,{key:a.id,a})))),
 
